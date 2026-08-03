@@ -7,6 +7,8 @@ import type {
 import { ACTIVITIES, FOLLOWUPS, LEADS, PROPERTIES, TCMS, TOURS, HANDOFFS, SEQUENCES_INIT } from "./mock-data";
 import { autoAssign as autoAssignFn } from "./routing";
 import { pushObjectionToOwner, pushTourViewToOwner } from "@/owner/team-bridge";
+import { glueBus } from "@/owner/event-bus";
+import { lookupOwnerByRoomId } from "@/owner/lib/owner-registry";   //two newly added
 import { emit as emitConnector } from "./connectors";
 import { personName } from "./people";
 
@@ -40,7 +42,7 @@ interface AppState {
   reassignLead: (leadId: string, tcmId: string, reason: string) => void;
   autoAssignLead: (leadId: string) => { tcmId: string; reasons: string[] };
 
-  scheduleTour: (input: { leadId: string; propertyId: string; tcmId: string; scheduledAt: string }) => Tour;
+  scheduleTour: (input: { leadId: string; propertyId: string; tcmId: string; scheduledAt: string; roomId?: string}) => Tour;
   cancelTour: (tourId: string) => void;
   rescheduleTour: (tourId: string, scheduledAt: string) => void;
   completeTour: (tourId: string) => void;
@@ -148,48 +150,101 @@ export const useApp = create<AppState>((set, get) => ({
     }));
   },
 
-  scheduleTour: ({ leadId, propertyId, tcmId, scheduledAt }) => {
-    const lead = get().leads.find((l) => l.id === leadId)!;
-    const tour: Tour = {
-      id: uid("t"), leadId, propertyId, tcmId, scheduledAt,
-      status: "scheduled", decision: null,
-      postTour: {
-        outcome: null, confidence: 0, objection: null, objectionNote: "",
-        expectedDecisionAt: null, nextFollowUpAt: null, filledAt: null,
-      },
-      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-    };
-    set((s) => ({
-      tours: [tour, ...s.tours],
-      leads: s.leads.map((l) =>
-        l.id === leadId ? { ...l, stage: "tour-scheduled", updatedAt: new Date().toISOString() } : l,
-      ),
-    }));
-    pushActivity(set, get, {
-      kind: "tour_scheduled", actor: tcmId, leadId, tourId: tour.id, propertyId,
-      text: `Tour scheduled for ${lead.name}`,
-    });
-    pushActivity(set, get, {
-      kind: "message_sent", actor: "system", leadId, tourId: tour.id,
-      text: `Auto WhatsApp confirmation sent to ${lead.name}`,
-    });
-    // Connector — Flow Ops scheduling earns assist; TCM is primary.
-    const actorRole = get().role;
-    const actorId = actorRole === "tcm" ? get().currentTcmId : actorRole;
-    emitConnector({
-      kind: "tour.scheduled",
-      actorRole,
-      actorId,
-      leadId, tourId: tour.id, propertyId,
-      text: `${personName(actorId, "Someone")} scheduled tour for ${lead.name}`,
-      assists: actorRole === "flow-ops"
+  scheduleTour: ({ leadId, propertyId, tcmId, scheduledAt, roomId }) => {
+  const lead = get().leads.find((l) => l.id === leadId)!;
+
+  const tour: Tour = {
+    id: uid("t"),
+    leadId,
+    propertyId,
+    ...(roomId ? { roomId } : {}),
+    tcmId,
+    scheduledAt,
+    status: "scheduled",
+    decision: null,
+    postTour: {
+      outcome: null,
+      confidence: 0,
+      objection: null,
+      objectionNote: "",
+      expectedDecisionAt: null,
+      nextFollowUpAt: null,
+      filledAt: null,
+    },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  set((s) => ({
+    tours: [tour, ...s.tours],
+    leads: s.leads.map((l) =>
+      l.id === leadId
+        ? {
+            ...l,
+            stage: "tour-scheduled",
+            updatedAt: new Date().toISOString(),
+          }
+        : l,
+    ),
+  }));
+
+  pushActivity(set, get, {
+    kind: "tour_scheduled",
+    actor: tcmId,
+    leadId,
+    tourId: tour.id,
+    propertyId,
+    text: `Tour scheduled for ${lead.name}`,
+  });
+
+  pushActivity(set, get, {
+    kind: "message_sent",
+    actor: "system",
+    leadId,
+    tourId: tour.id,
+    text: `Auto WhatsApp confirmation sent to ${lead.name}`,
+  });
+
+  // Owner ↔ Team hotel inventory connection.
+  // Only publish a room-specific owner event when this tour
+  // was scheduled against an exact Owner Inventory room.
+  if (roomId) {
+    const ownerMatch = lookupOwnerByRoomId(roomId);
+
+    if (ownerMatch) {
+      glueBus.publish({
+        type: "team.visit.scheduled",
+        tourId: tour.id,
+        leadId,
+        roomId,
+        ownerId: ownerMatch.owner.id,
+      });
+    }
+  }
+
+  // Connector — Flow Ops scheduling earns assist; TCM is primary.
+  const actorRole = get().role;
+  const actorId =
+    actorRole === "tcm" ? get().currentTcmId : actorRole;
+
+  emitConnector({
+    kind: "tour.scheduled",
+    actorRole,
+    actorId,
+    leadId,
+    tourId: tour.id,
+    propertyId,
+    text: `${personName(actorId, "Someone")} scheduled tour for ${lead.name}`,
+    assists:
+      actorRole === "flow-ops"
         ? [{ role: "tcm", id: tcmId }]
         : actorRole === "tcm" && tcmId !== actorId
           ? [{ role: "tcm", id: tcmId }]
           : undefined,
-    });
-    return tour;
-  },
+  });
+
+  return tour;
+},
 
   cancelTour: (tourId) => {
     const t = get().tours.find((x) => x.id === tourId);

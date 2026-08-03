@@ -71,6 +71,9 @@ export interface Tour {
   id: string;
   leadId: string;
   propertyId: string;
+  //Eaxct owner inventory room selected for this tour.
+  // Optional so existing/old tours continue to work.
+  roomId?: string;
   tcmId: string;
   scheduledAt: string;
   status: TourStatus;
