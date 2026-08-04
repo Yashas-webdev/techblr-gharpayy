@@ -71,8 +71,17 @@ export function LeadDossierPanel({ lead }: { lead: Lead }) {
     [lead, profile, tours, visits, objections, calls],
   );
 
-  const bestTime = useMemo(() => inferBestCallTime(calls), [calls]);
+ const bestTime = useMemo(() => {
+  const latestCallWithBestTime = calls.find(
+    (call) => call.bestCallTime,
+  );
 
+  return (
+    latestCallWithBestTime?.bestCallTime ??
+    profile?.bestCallTime ??
+    "—"
+  );
+}, [calls, profile?.bestCallTime]);
   // Call form state
   const [duration, setDuration] = useState(60);
   const [outcome, setOutcome] = useState<CallOutcome>("answered");
@@ -86,9 +95,37 @@ export function LeadDossierPanel({ lead }: { lead: Lead }) {
 
   const [notes, setNotes] = useState("");
 
-  const submitCall = () => {
-    // If Custom Time is selected, convert the selected
-    // hour/minute/period into a readable time.
+    const submitCall = () => {
+    // Validate language
+    if (!language) {
+      toast.error("Please select a language");
+      return;
+    }
+
+    // Validate best call time
+    if (!bestCallTime) {
+      toast.error("Please select the best call time");
+      return;
+    }
+
+    // Validate custom time
+    if (bestCallTime === "custom") {
+      const hour = Number(customHour);
+      const minute = Number(customMinute);
+
+      if (
+        !customHour ||
+        !customMinute ||
+        hour < 1 ||
+        hour > 12 ||
+        minute < 0 ||
+        minute > 59
+      ) {
+        toast.error("Please enter a valid custom call time");
+        return;
+      }
+    }
+
     const finalBestCallTime =
       bestCallTime === "custom"
         ? `${customHour.padStart(2, "0")}:${customMinute.padStart(
@@ -102,15 +139,15 @@ export function LeadDossierPanel({ lead }: { lead: Lead }) {
       attemptNumber: calls.length + 1,
       durationSec: duration,
       outcome,
-      language: language || undefined,
-      bestCallTime: finalBestCallTime || undefined,
+      language,
+      bestCallTime: finalBestCallTime,
       notes,
       loggedBy: lead.assignedTcmId,
     });
 
     toast.success("Call logged");
 
-    // Reset form
+    // Reset fields
     setNotes("");
     setBestCallTime("");
     setCustomHour("06");
